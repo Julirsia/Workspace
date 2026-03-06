@@ -1,0 +1,52 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 12000
+  },
+
+  "watcher": {
+    "ignore": ["node_modules/**", "dist/**", ".git/**", ".venv/**", "__pycache__/**"]
+  },
+
+  "permission": {
+    "read": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*.env.example": "allow"
+    },
+    "bash": {
+      "*": "ask",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "grep *": "allow",
+      "rg *": "allow",
+      "pytest *": "ask",
+      "python -m pytest *": "ask",
+      "npm test*": "ask",
+      "pnpm test*": "ask",
+      "git push *": "deny",
+      "rm *": "deny"
+    },
+    "edit": "ask"
+  },
+
+  "agent": {
+    "owui-worker": {
+      "mode": "primary",
+      "description": "Primary agent used by the OpenWebUI orchestrator"
+    },
+    "owui-review": {
+      "mode": "subagent",
+      "hidden": true,
+      "description": "Review-only helper",
+      "permission": {
+        "edit": "deny",
+        "bash": "ask"
+      }
+    }
+  }
+}
