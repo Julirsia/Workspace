@@ -137,11 +137,13 @@ OpenWebUI에서 Tool Server 등록:
 
 - 첫 실제 OpenCode 작업의 기본 진입점
 - binding이 없으면 lazy-create
+- 모델 선택이 필요하면 nested `model` 객체 대신 top-level `model_provider_id`, `model_id`를 사용
 
 ### `POST /oc/task/sync`
 
 - 짧은 작업용
 - 역시 binding이 없으면 lazy-create
+- 모델 선택이 필요하면 nested `model` 객체 대신 top-level `model_provider_id`, `model_id`를 사용
 
 ### `POST /oc/status`
 

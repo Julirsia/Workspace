@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -76,18 +76,6 @@ logging.basicConfig(
 log = logging.getLogger("opencode2openwebui")
 
 
-class ModelSelector(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    provider_id: Optional[str] = Field(default=None, alias="providerID")
-    model_id: Optional[str] = Field(default=None, alias="modelID")
-
-    def to_opencode(self) -> Optional[Dict[str, str]]:
-        if not self.provider_id or not self.model_id:
-            return None
-        return {"providerID": self.provider_id, "modelID": self.model_id}
-
-
 class RequestContext(BaseModel):
     user_id: str
     chat_id: str
@@ -132,7 +120,8 @@ class TaskRequest(BaseModel):
     prompt: str
     briefing: Optional[str] = None
     agent: Optional[str] = None
-    model: Optional[ModelSelector] = None
+    model_provider_id: Optional[str] = None
+    model_id: Optional[str] = None
     create_if_missing: bool = True
     include_diff: bool = True
     include_todos: bool = True
@@ -720,6 +709,12 @@ def normalize_result_json(raw: Optional[Dict[str, Any]], fallback_text: str) -> 
     }
 
 
+def task_model_to_opencode(req: TaskRequest) -> Optional[Dict[str, str]]:
+    if not req.model_provider_id or not req.model_id:
+        return None
+    return {"providerID": req.model_provider_id, "modelID": req.model_id}
+
+
 def binding_to_out(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "session_ref": row["session_ref"],
@@ -1152,10 +1147,9 @@ def build_prompt_body(req: TaskRequest) -> Dict[str, Any]:
     }
     if req.agent:
         body["agent"] = req.agent
-    if req.model:
-        model_payload = req.model.to_opencode()
-        if model_payload:
-            body["model"] = model_payload
+    model_payload = task_model_to_opencode(req)
+    if model_payload:
+        body["model"] = model_payload
     if SETTINGS.use_structured_output:
         body["format"] = {
             "type": "json_schema",
@@ -1165,19 +1159,18 @@ def build_prompt_body(req: TaskRequest) -> Dict[str, Any]:
     return body
 
 
-async def inject_briefing(session_id: str, briefing: str, agent: Optional[str], model: Optional[ModelSelector]) -> None:
+async def inject_briefing(session_id: str, briefing: str, req: TaskRequest) -> None:
     if not briefing.strip():
         return
     body: Dict[str, Any] = {
         "noReply": True,
         "parts": [{"type": "text", "text": "[OpenWebUI handoff]\n{briefing}".format(briefing=briefing.strip())}],
     }
-    if agent:
-        body["agent"] = agent
-    if model:
-        model_payload = model.to_opencode()
-        if model_payload:
-            body["model"] = model_payload
+    if req.agent:
+        body["agent"] = req.agent
+    model_payload = task_model_to_opencode(req)
+    if model_payload:
+        body["model"] = model_payload
     await opencode.prompt_sync(session_id, body, timeout_seconds=min(SETTINGS.sync_wait_timeout_s, 30.0))
 
 
@@ -1412,7 +1405,7 @@ async def oc_task_sync(request: Request, body: TaskRequest):
 
     async with lock:
         if body.briefing:
-            await inject_briefing(session_id, body.briefing, body.agent, body.model)
+            await inject_briefing(session_id, body.briefing, body)
 
         request_body = build_prompt_body(body)
         db.touch_binding(session_ref, preferred_agent=body.agent)
@@ -1479,7 +1472,7 @@ async def oc_task_async(request: Request, body: TaskRequest):
 
     async with lock:
         if body.briefing:
-            await inject_briefing(session_id, body.briefing, body.agent, body.model)
+            await inject_briefing(session_id, body.briefing, body)
         db.touch_binding(session_ref, preferred_agent=body.agent)
         await opencode.prompt_async(session_id, build_prompt_body(body))
 
