@@ -11,6 +11,8 @@ class FakeOpenCode:
         self.todos: Dict[str, List[Dict[str, Any]]] = {}
         self.diffs: Dict[str, List[Dict[str, Any]]] = {}
         self.status_map: Dict[str, Dict[str, Any]] = {}
+        self.prompt_sync_bodies: List[Dict[str, Any]] = []
+        self.prompt_async_bodies: List[Dict[str, Any]] = []
         self.create_session_calls = 0
         self.prompt_async_calls = 0
         self.prompt_sync_calls = 0
@@ -69,6 +71,7 @@ class FakeOpenCode:
 
     async def prompt_sync(self, session_id: str, body: Dict[str, Any], timeout_seconds: float) -> Dict[str, Any]:
         self.prompt_sync_calls += 1
+        self.prompt_sync_bodies.append(body)
         response = {
             "info": {"role": "assistant"},
             "parts": [{"type": "text", "text": self.next_sync_text}],
@@ -79,6 +82,7 @@ class FakeOpenCode:
 
     async def prompt_async(self, session_id: str, body: Dict[str, Any]) -> None:
         self.prompt_async_calls += 1
+        self.prompt_async_bodies.append(body)
         self.status_map[session_id] = {"type": "busy"}
 
     async def reply_permission(self, session_id: str, permission_id: str, response: str) -> bool:

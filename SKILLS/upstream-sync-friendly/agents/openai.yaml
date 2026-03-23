@@ -1,0 +1,4 @@
+interface:
+  display_name: "Upstream Sync Design"
+  short_description: "Reduce future upstream merge conflicts"
+  default_prompt: "Use $upstream-sync-friendly to implement this change so future upstream-to-internal syncs stay low-conflict."

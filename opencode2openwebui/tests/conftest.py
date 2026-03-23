@@ -1,5 +1,3 @@
-import asyncio
-import importlib
 import sys
 from pathlib import Path
 
@@ -11,27 +9,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from orchestrator.api import create_app
+from orchestrator.config import Settings
 from tests.fake_opencode import FakeOpenCode
 
 
 @pytest.fixture
-def app_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("ORCH_DB_PATH", str(tmp_path / "orchestrator.db"))
-    monkeypatch.setenv("OPENCODE_BASE_URL", "http://127.0.0.1:4096")
-    monkeypatch.setenv("ENABLE_OPENCODE_EVENT_LISTENER", "false")
-    monkeypatch.setenv("ALLOW_MISSING_OWUI_HEADERS", "false")
-
-    sys.modules.pop("app", None)
-    module = importlib.import_module("app")
-    old_client = module.opencode
-    asyncio.run(old_client.close())
-
+def app_env(tmp_path):
+    settings = Settings(
+        db_path=str(tmp_path / "orchestrator.db"),
+        opencode_base_url="http://127.0.0.1:4096",
+        event_listener_enabled=False,
+        allow_missing_owui_headers=False,
+    )
     fake = FakeOpenCode()
-    module.opencode = fake
-    module._FIXED_WORKSPACE_ROOT_CACHE = None
+    app = create_app(settings=settings, opencode_client=fake)
 
-    with TestClient(module.app) as client:
-        yield module, fake, client
+    with TestClient(app) as client:
+        yield app, fake, client
 
 
 @pytest.fixture
