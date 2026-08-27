@@ -1,6 +1,9 @@
-name: Build FUTO Korean Hardware Keyboard APK
+name: Build FUTO ReteKey Hardware Korean APK
 
 on:
+  push:
+    branches:
+      - chatgpt/futo-ctrl-space-build
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -31,46 +34,58 @@ jobs:
         shell: bash
         run: |
           git lfs install
+          git lfs pull || true
           git submodule foreach --recursive 'git lfs pull || true'
 
-      - name: Patch system subtypes and Korean physical input
+      - name: Apply ReteKey-style Android subtypes and hardware Hangul path
         shell: bash
         run: |
-          python3 -m py_compile \
-            harness/.github/scripts/futo_system_subtypes_patch.py \
-            harness/.github/scripts/futo_korean_hardware_patch.py
+          python3 -m py_compile harness/.github/scripts/futo_retekey_physical_patch.py
+          python3 harness/.github/scripts/futo_retekey_physical_patch.py
 
-          python3 harness/.github/scripts/futo_system_subtypes_patch.py
-          python3 harness/.github/scripts/futo_korean_hardware_patch.py
-
-          echo '===== method.xml ====='
+          echo '===== Android IME subtype declaration ====='
           cat futo/java/res/xml/method.xml
-          echo '===== KoreanHardwareKeyMapper ====='
-          cat futo/java/src/org/futo/inputmethod/event/KoreanHardwareKeyMapper.java
-          echo '===== LatinIMELegacy hook ====='
-          grep -n -A8 -B5 'KoreanHardwareKeyMapper.remapIfNeeded' \
+          echo '===== ReteKey physical mapper hook ====='
+          grep -n -A8 -B5 'ReteKeyDubeolsikHardwareMapper.remapIfNeeded' \
             futo/java/src/org/futo/inputmethod/latin/LatinIMELegacy.java
+          echo '===== System subtype callback ====='
+          grep -n -A16 -B5 'onCurrentInputMethodSubtypeChanged' \
+            futo/java/src/org/futo/inputmethod/latin/LatinIME.kt
 
           python3 - <<'PY'
           from pathlib import Path
+          import xml.etree.ElementTree as ET
 
-          latin = Path("futo/java/src/org/futo/inputmethod/latin/LatinIME.kt").read_text()
-          legacy = Path("futo/java/src/org/futo/inputmethod/latin/LatinIMELegacy.java").read_text()
-          mapper = Path("futo/java/src/org/futo/inputmethod/event/KoreanHardwareKeyMapper.java").read_text()
+          root = Path('futo')
+          latin = (root / 'java/src/org/futo/inputmethod/latin/LatinIME.kt').read_text()
+          legacy = (root / 'java/src/org/futo/inputmethod/latin/LatinIMELegacy.java').read_text()
+          mapper = (root / 'java/src/org/futo/inputmethod/event/ReteKeyDubeolsikHardwareMapper.java').read_text()
+          gradle = (root / 'build.gradle').read_text()
 
-          latin_class = latin.index("class LatinIME : InputMethodServiceCompose()")
-          bridge = latin.index("private var systemSubtypeBridgeReady = false")
-          assert bridge > latin_class
-          assert latin.count("override fun onCurrentInputMethodSubtypeChanged") == 1
-          assert latin.count("enableEnglishAndKoreanSystemSubtypes()") == 3
-          assert "syncSystemSubtypeFromFutoSubtype(subtype)" in latin
+          ns = '{http://schemas.android.com/apk/res/android}'
+          subtypes = ET.parse(root / 'java/res/xml/method.xml').getroot().findall('subtype')
+          assert len(subtypes) == 2
+          assert [s.attrib[ns + 'imeSubtypeLocale'] for s in subtypes] == ['ko_KR', 'en_US']
+          assert [s.attrib[ns + 'isAsciiCapable'] for s in subtypes] == ['false', 'true']
+          assert all(ns + 'subtypeId' not in s.attrib for s in subtypes)
+          assert all(ns + 'imeSubtypeExtraValue' not in s.attrib for s in subtypes)
+          assert all(ns + 'overridesImplicitlyEnabledSubtype' not in s.attrib for s in subtypes)
 
-          assert legacy.count("KoreanHardwareKeyMapper.remapIfNeeded") == 1
-          assert mapper.count("case KeyEvent.KEYCODE_") == 26
-          assert "META_CTRL_ON" in mapper and "META_ALT_ON" in mapper
-          assert "shifted ? 'ㄲ' : 'ㄱ'" in mapper
-          assert "shifted ? 'ㅒ' : 'ㅐ'" in mapper
-          print("Source validation passed: Android subtypes + 26-key Dubeolsik map")
+          assert latin.count('override fun onCurrentInputMethodSubtypeChanged') == 1
+          assert 'reteKeyHardwareKoreanMode' in latin
+          assert 'reteKeySyncCurrentSystemSubtype()' in latin
+          assert 'setExplicitlyEnabledInputMethodSubtypes' not in latin
+          assert 'switchInputMethod(' not in latin
+          assert legacy.count('ReteKeyDubeolsikHardwareMapper.remapIfNeeded') == 1
+          assert mapper.count('case KeyEvent.KEYCODE_') == 26
+          assert "case KeyEvent.KEYCODE_R: return shifted ? 'ㄲ' : 'ㄱ';" in mapper
+          assert "case KeyEvent.KEYCODE_K: return 'ㅏ';" in mapper
+          assert "case KeyEvent.KEYCODE_S: return 'ㄴ';" in mapper
+          assert "case KeyEvent.KEYCODE_G: return 'ㅎ';" in mapper
+          assert "case KeyEvent.KEYCODE_M: return 'ㅡ';" in mapper
+          assert "case KeyEvent.KEYCODE_F: return 'ㄹ';" in mapper
+          assert 'applicationIdSuffix ".retekeyhardware"' in gradle
+          print('Source validation passed: ReteKey subtype model + physical Dubeolsik path')
           PY
 
       - name: Set up JDK 17
@@ -88,18 +103,18 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
 
-      - name: Build patched unstable debug APK
+      - name: Build patched APK under a fresh package ID
         working-directory: futo
         shell: bash
         env:
-          VERSION_CODE: '130020'
-          VERSION_NAME: '0.1.30-korean-hardware-v3'
-          BRANCH_NAME: 'korean-hardware-v3'
+          VERSION_CODE: '130040'
+          VERSION_NAME: '0.1.30-retekey-hardware-v4'
+          BRANCH_NAME: 'retekey-hardware-v4'
         run: |
           chmod +x gradlew
           ./gradlew assembleUnstableDebug --no-daemon --stacktrace
 
-      - name: Verify compiled APK subtypes and mapper bytecode
+      - name: Verify APK package, subtypes, bytecode, resources and signature
         working-directory: futo
         shell: bash
         run: |
@@ -107,13 +122,23 @@ jobs:
           test -n "$APK"
           BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
 
+          "$BUILD_TOOLS/aapt2" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='org.futo.inputmethod.latin.retekeyhardware'" /tmp/badging.txt
+          grep -q "application-label:'FUTO Keyboard \[ReteKey HW\]'" /tmp/badging.txt
+
           "$BUILD_TOOLS/aapt2" dump xmltree "$APK" --file res/xml/method.xml \
             | tee /tmp/method-xmltree.txt
           test "$(grep -c 'E: subtype' /tmp/method-xmltree.txt)" -eq 2
-          grep -q 'imeSubtypeLocale.*en_US' /tmp/method-xmltree.txt
           grep -q 'imeSubtypeLocale.*ko_KR' /tmp/method-xmltree.txt
-          test "$(grep -c 'subtypeId' /tmp/method-xmltree.txt)" -eq 2
+          grep -q 'imeSubtypeLocale.*en_US' /tmp/method-xmltree.txt
+          grep -q 'isAsciiCapable.*0xffffffff' /tmp/method-xmltree.txt
+          grep -q 'isAsciiCapable.*0x0' /tmp/method-xmltree.txt
+          ! grep -q 'subtypeId' /tmp/method-xmltree.txt
+          ! grep -q 'imeSubtypeExtraValue' /tmp/method-xmltree.txt
           ! grep -q 'overridesImplicitlyEnabledSubtype' /tmp/method-xmltree.txt
+
+          "$BUILD_TOOLS/aapt2" dump resources "$APK" > /tmp/resources.txt
+          grep -q 'retekey_mit_license' /tmp/resources.txt
 
           rm -rf /tmp/futo-dex
           mkdir -p /tmp/futo-dex
@@ -122,16 +147,23 @@ jobs:
           for DEX in /tmp/futo-dex/classes*.dex; do
             "$BUILD_TOOLS/dexdump" -d "$DEX" >> /tmp/futo-dexdump.txt
           done
-          grep -q 'KoreanHardwareKeyMapper' /tmp/futo-dexdump.txt
+          grep -q 'ReteKeyDubeolsikHardwareMapper' /tmp/futo-dexdump.txt
           grep -q 'remapIfNeeded' /tmp/futo-dexdump.txt
-          grep -q 'mapKeyCode' /tmp/futo-dexdump.txt
+          grep -q 'isReteKeyHardwareKoreanMode' /tmp/futo-dexdump.txt
+          grep -q 'onCurrentInputMethodSubtypeChanged' /tmp/futo-dexdump.txt
 
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" \
             | tee "$APK.apksigner.txt"
           sha256sum "$APK" | tee "$APK.sha256"
-          ls -lh "$APK" "$APK.sha256" "$APK.apksigner.txt"
+          printf '%s\n' \
+            'Package: org.futo.inputmethod.latin.retekeyhardware' \
+            'Label: FUTO Keyboard [ReteKey HW]' \
+            'System subtypes: ko_KR, en_US' \
+            'Physical mapping: ReteKey-style 26-key Dubeolsik -> FUTO KoreanCombiner' \
+            > "$APK.verification.txt"
+          ls -lh "$APK" "$APK.sha256" "$APK.apksigner.txt" "$APK.verification.txt"
 
-      - name: Show APKs
+      - name: Show build outputs
         if: always()
         shell: bash
         run: find futo -path '*/build/outputs/apk/*' -type f -print || true
@@ -139,10 +171,11 @@ jobs:
       - name: Upload patched APK
         uses: actions/upload-artifact@v4
         with:
-          name: futo-0.1.30-korean-hardware-v3
+          name: futo-0.1.30-retekey-hardware-v4
           path: |
             futo/build/outputs/apk/unstable/debug/*.apk
             futo/build/outputs/apk/unstable/debug/*.sha256
             futo/build/outputs/apk/unstable/debug/*.apksigner.txt
+            futo/build/outputs/apk/unstable/debug/*.verification.txt
           if-no-files-found: error
           retention-days: 3
