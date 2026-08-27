@@ -13,6 +13,7 @@ method.write_text('''<?xml version="1.0" encoding="utf-8"?>
     android:suppressesSpellChecker="true">
 
     <subtype
+        android:subtypeId="1001"
         android:icon="@drawable/ic_launcher_foreground"
         android:label="@string/futo_system_subtype_label"
         android:imeSubtypeLocale="en_US"
@@ -22,6 +23,7 @@ method.write_text('''<?xml version="1.0" encoding="utf-8"?>
         android:isAsciiCapable="true" />
 
     <subtype
+        android:subtypeId="1002"
         android:icon="@drawable/ic_launcher_foreground"
         android:label="@string/futo_system_subtype_label"
         android:imeSubtypeLocale="ko_KR"
@@ -41,17 +43,17 @@ if "futo_system_subtype_label" not in text:
 latin = root / "java/src/org/futo/inputmethod/latin/LatinIME.kt"
 text = latin.read_text(encoding="utf-8")
 
+if "import android.content.ComponentName\n" not in text:
+    text = text.replace(
+        "import android.content.BroadcastReceiver\n",
+        "import android.content.BroadcastReceiver\nimport android.content.ComponentName\n",
+        1,
+    )
+
 if "import android.view.inputmethod.InputMethodManager\n" not in text:
     text = text.replace(
         "import android.view.inputmethod.InputMethodSubtype\n",
         "import android.view.inputmethod.InputMethodManager\nimport android.view.inputmethod.InputMethodSubtype\n",
-        1,
-    )
-
-if "import org.futo.inputmethod.latin.uix.setSettingBlocking\n" not in text:
-    text = text.replace(
-        "import org.futo.inputmethod.latin.uix.setSetting\n",
-        "import org.futo.inputmethod.latin.uix.setSetting\nimport org.futo.inputmethod.latin.uix.setSettingBlocking\n",
         1,
     )
 
@@ -92,12 +94,15 @@ bridge = r'''    private fun configuredSubtypeForLanguage(language: String): Str
         if (locale.language != "en" && locale.language != "ko") return
 
         val target = ensureConfiguredSubtypeForLanguage(locale.language) ?: return
-        if (getSettingBlocking(ActiveSubtype) != target) {
-            setSettingBlocking(ActiveSubtype.key, target)
-        }
 
+        // Persist FUTO's internal language selection asynchronously.  The immediate
+        // changeSubtype() call below makes the switch visible without waiting for DataStore.
+        launchJob {
+            setSetting(ActiveSubtype, target)
+        }
         changeSubtype(target)
-        Log.i("LatinIME", "System IME subtype ${newSubtype.locale} -> FUTO $target")
+
+        Log.i("LatinIME", "Android subtype ${newSubtype.locale} -> FUTO $target")
     }
 
     private fun enableEnglishAndKoreanSystemSubtypes() {
@@ -105,36 +110,19 @@ bridge = r'''    private fun configuredSubtypeForLanguage(language: String): Str
 
         try {
             val imm = getSystemService(InputMethodManager::class.java)
-            val self = imm.inputMethodList.firstOrNull {
-                it.packageName == packageName && it.serviceName == LatinIME::class.java.name
-            } ?: imm.inputMethodList.firstOrNull {
-                it.packageName == packageName
-            } ?: return
+            val imeId = ComponentName(this, LatinIME::class.java).flattenToShortString()
 
-            val wanted = (0 until self.subtypeCount)
-                .map { self.getSubtypeAt(it) }
-                .filter {
-                    val language = try {
-                        Subtypes.getLocale(it).language
-                    } catch (_: Throwable) {
-                        ""
-                    }
-                    language == "en" || language == "ko"
-                }
-
-            if (wanted.size >= 2) {
-                imm.setExplicitlyEnabledInputMethodSubtypes(
-                    self.id,
-                    wanted.map { it.hashCode() }.toIntArray()
-                )
-                Log.i(
-                    "LatinIME",
-                    "Enabled Android system subtypes: " +
-                            wanted.joinToString { "${it.locale}:${it.hashCode()}" }
-                )
-            } else {
-                Log.w("LatinIME", "Expected English+Korean system subtypes, found ${wanted.size}")
-            }
+            // API 34+: enable our two statically-declared subtype IDs.  Reflection is
+            // intentional here because the FUTO 0.1.30 build stubs expose a mismatched
+            // Kotlin signature for this framework API even though the platform method
+            // is setExplicitlyEnabledInputMethodSubtypes(String, int[]).
+            val api = InputMethodManager::class.java.getMethod(
+                "setExplicitlyEnabledInputMethodSubtypes",
+                String::class.java,
+                IntArray::class.java
+            )
+            api.invoke(imm, imeId, intArrayOf(1001, 1002))
+            Log.i("LatinIME", "Enabled Android system subtypes en=1001 ko=1002 for $imeId")
         } catch (t: Throwable) {
             Log.e("LatinIME", "Failed to enable Android system IME subtypes", t)
         }
