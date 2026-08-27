@@ -1,4 +1,4 @@
-name: Build FUTO English-Korean System Subtypes APK
+name: Build FUTO Korean Hardware Keyboard APK
 
 on:
   pull_request:
@@ -33,26 +33,44 @@ jobs:
           git lfs install
           git submodule foreach --recursive 'git lfs pull || true'
 
-      - name: Patch and validate Android IME subtypes
+      - name: Patch system subtypes and Korean physical input
         shell: bash
         run: |
-          python3 -m py_compile harness/.github/scripts/futo_system_subtypes_patch.py
+          python3 -m py_compile \
+            harness/.github/scripts/futo_system_subtypes_patch.py \
+            harness/.github/scripts/futo_korean_hardware_patch.py
+
           python3 harness/.github/scripts/futo_system_subtypes_patch.py
+          python3 harness/.github/scripts/futo_korean_hardware_patch.py
 
           echo '===== method.xml ====='
           cat futo/java/res/xml/method.xml
-          echo '===== LatinIME bridge placement ====='
+          echo '===== KoreanHardwareKeyMapper ====='
+          cat futo/java/src/org/futo/inputmethod/event/KoreanHardwareKeyMapper.java
+          echo '===== LatinIMELegacy hook ====='
+          grep -n -A8 -B5 'KoreanHardwareKeyMapper.remapIfNeeded' \
+            futo/java/src/org/futo/inputmethod/latin/LatinIMELegacy.java
+
           python3 - <<'PY'
           from pathlib import Path
 
-          text = Path("futo/java/src/org/futo/inputmethod/latin/LatinIME.kt").read_text()
-          latin = text.index("class LatinIME : InputMethodServiceCompose()")
-          bridge = text.index("private var systemSubtypeBridgeReady = false")
-          assert bridge > latin
-          assert text.count("override fun onCurrentInputMethodSubtypeChanged") == 1
-          assert text.count("enableEnglishAndKoreanSystemSubtypes()") == 3  # declaration + onCreate + unlock
-          assert "syncSystemSubtypeFromFutoSubtype(subtype)" in text
-          print(text[bridge - 160:bridge + 1200])
+          latin = Path("futo/java/src/org/futo/inputmethod/latin/LatinIME.kt").read_text()
+          legacy = Path("futo/java/src/org/futo/inputmethod/latin/LatinIMELegacy.java").read_text()
+          mapper = Path("futo/java/src/org/futo/inputmethod/event/KoreanHardwareKeyMapper.java").read_text()
+
+          latin_class = latin.index("class LatinIME : InputMethodServiceCompose()")
+          bridge = latin.index("private var systemSubtypeBridgeReady = false")
+          assert bridge > latin_class
+          assert latin.count("override fun onCurrentInputMethodSubtypeChanged") == 1
+          assert latin.count("enableEnglishAndKoreanSystemSubtypes()") == 3
+          assert "syncSystemSubtypeFromFutoSubtype(subtype)" in latin
+
+          assert legacy.count("KoreanHardwareKeyMapper.remapIfNeeded") == 1
+          assert mapper.count("case KeyEvent.KEYCODE_") == 26
+          assert "META_CTRL_ON" in mapper and "META_ALT_ON" in mapper
+          assert "shifted ? 'ㄲ' : 'ㄱ'" in mapper
+          assert "shifted ? 'ㅒ' : 'ㅐ'" in mapper
+          print("Source validation passed: Android subtypes + 26-key Dubeolsik map")
           PY
 
       - name: Set up JDK 17
@@ -74,30 +92,44 @@ jobs:
         working-directory: futo
         shell: bash
         env:
-          VERSION_CODE: '130010'
-          VERSION_NAME: '0.1.30-system-subtypes-v2'
-          BRANCH_NAME: 'system-subtypes-v2'
+          VERSION_CODE: '130020'
+          VERSION_NAME: '0.1.30-korean-hardware-v3'
+          BRANCH_NAME: 'korean-hardware-v3'
         run: |
           chmod +x gradlew
           ./gradlew assembleUnstableDebug --no-daemon --stacktrace
 
-      - name: Verify compiled APK contains two visible subtypes
+      - name: Verify compiled APK subtypes and mapper bytecode
         working-directory: futo
         shell: bash
         run: |
           APK="$(find build/outputs/apk/unstable/debug -type f -name '*.apk' -print -quit)"
           test -n "$APK"
-          AAPT2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
 
-          "$AAPT2" dump xmltree "$APK" --file res/xml/method.xml | tee /tmp/method-xmltree.txt
+          "$BUILD_TOOLS/aapt2" dump xmltree "$APK" --file res/xml/method.xml \
+            | tee /tmp/method-xmltree.txt
           test "$(grep -c 'E: subtype' /tmp/method-xmltree.txt)" -eq 2
           grep -q 'imeSubtypeLocale.*en_US' /tmp/method-xmltree.txt
           grep -q 'imeSubtypeLocale.*ko_KR' /tmp/method-xmltree.txt
           test "$(grep -c 'subtypeId' /tmp/method-xmltree.txt)" -eq 2
           ! grep -q 'overridesImplicitlyEnabledSubtype' /tmp/method-xmltree.txt
 
+          rm -rf /tmp/futo-dex
+          mkdir -p /tmp/futo-dex
+          unzip -q "$APK" 'classes*.dex' -d /tmp/futo-dex
+          : > /tmp/futo-dexdump.txt
+          for DEX in /tmp/futo-dex/classes*.dex; do
+            "$BUILD_TOOLS/dexdump" -d "$DEX" >> /tmp/futo-dexdump.txt
+          done
+          grep -q 'KoreanHardwareKeyMapper' /tmp/futo-dexdump.txt
+          grep -q 'remapIfNeeded' /tmp/futo-dexdump.txt
+          grep -q 'mapKeyCode' /tmp/futo-dexdump.txt
+
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" \
+            | tee "$APK.apksigner.txt"
           sha256sum "$APK" | tee "$APK.sha256"
-          ls -lh "$APK" "$APK.sha256"
+          ls -lh "$APK" "$APK.sha256" "$APK.apksigner.txt"
 
       - name: Show APKs
         if: always()
@@ -107,9 +139,10 @@ jobs:
       - name: Upload patched APK
         uses: actions/upload-artifact@v4
         with:
-          name: futo-0.1.30-system-subtypes-v2
+          name: futo-0.1.30-korean-hardware-v3
           path: |
             futo/build/outputs/apk/unstable/debug/*.apk
             futo/build/outputs/apk/unstable/debug/*.sha256
+            futo/build/outputs/apk/unstable/debug/*.apksigner.txt
           if-no-files-found: error
           retention-days: 3
