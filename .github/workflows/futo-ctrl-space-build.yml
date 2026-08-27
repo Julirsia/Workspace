@@ -34,47 +34,49 @@ jobs:
           from pathlib import Path
 
           path = Path("futo/java/src/org/futo/inputmethod/latin/LatinIME.kt")
-          text = path.read_text(encoding="utf-8")
+          lines = path.read_text(encoding="utf-8").splitlines()
 
-          old = '''    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-              return latinIMELegacy.onKeyDown(keyCode, event) || super.onKeyDown(keyCode, event)
-          }
+          down_sig = "override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {"
+          up_sig = "override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {"
 
-          override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-              return latinIMELegacy.onKeyUp(keyCode, event) || super.onKeyUp(keyCode, event)
-          }'''
+          down_idx = next((i for i, line in enumerate(lines) if line.strip() == down_sig), None)
+          up_idx = next((i for i, line in enumerate(lines) if line.strip() == up_sig), None)
+          if down_idx is None or up_idx is None or up_idx <= down_idx:
+              raise SystemExit(f"Could not locate hardware key hooks: down={down_idx}, up={up_idx}")
 
-          new = '''    private fun isHardwareLanguageSwitch(keyCode: Int, event: KeyEvent): Boolean {
-              return keyCode == KeyEvent.KEYCODE_LANGUAGE_SWITCH ||
-                      (keyCode == KeyEvent.KEYCODE_SPACE && event.isCtrlPressed)
-          }
+          down_end = next(i for i in range(down_idx + 1, len(lines)) if lines[i] == "    }")
+          up_end = next(i for i in range(up_idx + 1, len(lines)) if lines[i] == "    }")
+          if down_end >= up_idx:
+              raise SystemExit("Unexpected onKeyDown method structure")
 
-          override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-              if (event != null && isHardwareLanguageSwitch(keyCode, event)) {
-                  // Prevent key repeat from cycling languages while the shortcut is held.
-                  if (event.repeatCount == 0) {
-                      // Ctrl+Space -> next language; Ctrl+Shift+Space -> previous language.
-                      Subtypes.switchToNextLanguage(this, if (event.isShiftPressed) -1 else 1)
-                  }
-                  return true
-              }
+          replacement = [
+              "    private fun isHardwareLanguageSwitch(keyCode: Int, event: KeyEvent): Boolean {",
+              "        return keyCode == KeyEvent.KEYCODE_LANGUAGE_SWITCH ||",
+              "                (keyCode == KeyEvent.KEYCODE_SPACE && event.isCtrlPressed)",
+              "    }",
+              "",
+              "    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {",
+              "        if (event != null && isHardwareLanguageSwitch(keyCode, event)) {",
+              "            if (event.repeatCount == 0) {",
+              "                Subtypes.switchToNextLanguage(this, if (event.isShiftPressed) -1 else 1)",
+              "            }",
+              "            return true",
+              "        }",
+              "",
+              "        return latinIMELegacy.onKeyDown(keyCode, event) || super.onKeyDown(keyCode, event)",
+              "    }",
+              "",
+              "    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {",
+              "        if (event != null && isHardwareLanguageSwitch(keyCode, event)) {",
+              "            return true",
+              "        }",
+              "",
+              "        return latinIMELegacy.onKeyUp(keyCode, event) || super.onKeyUp(keyCode, event)",
+              "    }",
+          ]
 
-              return latinIMELegacy.onKeyDown(keyCode, event) || super.onKeyDown(keyCode, event)
-          }
-
-          override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-              // Consume key-up too so SPACE never leaks into the target application.
-              if (event != null && isHardwareLanguageSwitch(keyCode, event)) {
-                  return true
-              }
-
-              return latinIMELegacy.onKeyUp(keyCode, event) || super.onKeyUp(keyCode, event)
-          }'''
-
-          if text.count(old) != 1:
-              raise SystemExit(f"Expected onKeyDown/onKeyUp block exactly once, found {text.count(old)}")
-
-          path.write_text(text.replace(old, new), encoding="utf-8")
+          lines[down_idx:up_end + 1] = replacement
+          path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           print("Patched", path)
 
       - name: Verify patch
