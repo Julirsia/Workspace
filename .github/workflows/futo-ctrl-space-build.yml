@@ -1,0 +1,122 @@
+name: Build FUTO Ctrl+Space APK
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout FUTO Keyboard 0.1.30
+        uses: actions/checkout@v4
+        with:
+          repository: futo-org/android-keyboard
+          ref: 0.1.30
+          submodules: recursive
+          path: futo
+
+      - name: Fetch Git LFS assets
+        working-directory: futo
+        shell: bash
+        run: |
+          git lfs install
+          git submodule foreach --recursive 'git lfs pull || true'
+
+      - name: Patch physical Ctrl+Space language switching
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("futo/java/src/org/futo/inputmethod/latin/LatinIME.kt")
+          text = path.read_text(encoding="utf-8")
+
+          old = '''    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+              return latinIMELegacy.onKeyDown(keyCode, event) || super.onKeyDown(keyCode, event)
+          }
+
+          override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+              return latinIMELegacy.onKeyUp(keyCode, event) || super.onKeyUp(keyCode, event)
+          }'''
+
+          new = '''    private fun isHardwareLanguageSwitch(keyCode: Int, event: KeyEvent): Boolean {
+              return keyCode == KeyEvent.KEYCODE_LANGUAGE_SWITCH ||
+                      (keyCode == KeyEvent.KEYCODE_SPACE && event.isCtrlPressed)
+          }
+
+          override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+              if (event != null && isHardwareLanguageSwitch(keyCode, event)) {
+                  // Prevent key repeat from cycling languages while the shortcut is held.
+                  if (event.repeatCount == 0) {
+                      // Ctrl+Space -> next language; Ctrl+Shift+Space -> previous language.
+                      Subtypes.switchToNextLanguage(this, if (event.isShiftPressed) -1 else 1)
+                  }
+                  return true
+              }
+
+              return latinIMELegacy.onKeyDown(keyCode, event) || super.onKeyDown(keyCode, event)
+          }
+
+          override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+              // Consume key-up too so SPACE never leaks into the target application.
+              if (event != null && isHardwareLanguageSwitch(keyCode, event)) {
+                  return true
+              }
+
+              return latinIMELegacy.onKeyUp(keyCode, event) || super.onKeyUp(keyCode, event)
+          }'''
+
+          if text.count(old) != 1:
+              raise SystemExit(f"Expected onKeyDown/onKeyUp block exactly once, found {text.count(old)}")
+
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          print("Patched", path)
+
+      - name: Verify patch
+        shell: bash
+        run: |
+          grep -n -A28 -B3 'isHardwareLanguageSwitch' futo/java/src/org/futo/inputmethod/latin/LatinIME.kt
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build dependencies
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
+
+      - name: Build patched unstable debug APK
+        working-directory: futo
+        shell: bash
+        env:
+          VERSION_CODE: '130001'
+          VERSION_NAME: '0.1.30-ctrlspace'
+          BRANCH_NAME: 'ctrl-space-patch'
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleUnstableDebug --no-daemon --stacktrace
+
+      - name: Show APKs
+        if: always()
+        shell: bash
+        run: find futo -path '*/build/outputs/apk/*' -type f -name '*.apk' -print || true
+
+      - name: Upload patched APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: futo-0.1.30-ctrl-space
+          path: futo/build/outputs/apk/unstable/debug/*.apk
+          if-no-files-found: error
+          retention-days: 3
