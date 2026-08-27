@@ -1,4 +1,4 @@
-name: Build FUTO System Subtypes APK
+name: Build FUTO English-Korean System Subtypes APK
 
 on:
   pull_request:
@@ -33,19 +33,27 @@ jobs:
           git lfs install
           git submodule foreach --recursive 'git lfs pull || true'
 
-      - name: Patch Android system IME subtypes
-        shell: bash
-        run: python3 harness/.github/scripts/futo_system_subtypes_patch.py
-
-      - name: Verify subtype patch
+      - name: Patch and validate Android IME subtypes
         shell: bash
         run: |
+          python3 -m py_compile harness/.github/scripts/futo_system_subtypes_patch.py
+          python3 harness/.github/scripts/futo_system_subtypes_patch.py
+
           echo '===== method.xml ====='
           cat futo/java/res/xml/method.xml
-          echo '===== bridge ====='
-          grep -n -A100 -B5 'configuredSubtypeForLanguage' futo/java/src/org/futo/inputmethod/latin/LatinIME.kt
-          echo '===== subtype label ====='
-          grep -n 'futo_system_subtype_label' futo/java/res/values/strings-appname.xml
+          echo '===== LatinIME bridge placement ====='
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("futo/java/src/org/futo/inputmethod/latin/LatinIME.kt").read_text()
+          latin = text.index("class LatinIME : InputMethodServiceCompose()")
+          bridge = text.index("private var systemSubtypeBridgeReady = false")
+          assert bridge > latin
+          assert text.count("override fun onCurrentInputMethodSubtypeChanged") == 1
+          assert text.count("enableEnglishAndKoreanSystemSubtypes()") == 3  # declaration + onCreate + unlock
+          assert "syncSystemSubtypeFromFutoSubtype(subtype)" in text
+          print(text[bridge - 160:bridge + 1200])
+          PY
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -66,22 +74,42 @@ jobs:
         working-directory: futo
         shell: bash
         env:
-          VERSION_CODE: '130002'
-          VERSION_NAME: '0.1.30-system-subtypes'
-          BRANCH_NAME: 'system-subtypes-patch'
+          VERSION_CODE: '130010'
+          VERSION_NAME: '0.1.30-system-subtypes-v2'
+          BRANCH_NAME: 'system-subtypes-v2'
         run: |
           chmod +x gradlew
           ./gradlew assembleUnstableDebug --no-daemon --stacktrace
 
+      - name: Verify compiled APK contains two visible subtypes
+        working-directory: futo
+        shell: bash
+        run: |
+          APK="$(find build/outputs/apk/unstable/debug -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          AAPT2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
+
+          "$AAPT2" dump xmltree "$APK" --file res/xml/method.xml | tee /tmp/method-xmltree.txt
+          test "$(grep -c 'E: subtype' /tmp/method-xmltree.txt)" -eq 2
+          grep -q 'imeSubtypeLocale.*en_US' /tmp/method-xmltree.txt
+          grep -q 'imeSubtypeLocale.*ko_KR' /tmp/method-xmltree.txt
+          test "$(grep -c 'subtypeId' /tmp/method-xmltree.txt)" -eq 2
+          ! grep -q 'overridesImplicitlyEnabledSubtype' /tmp/method-xmltree.txt
+
+          sha256sum "$APK" | tee "$APK.sha256"
+          ls -lh "$APK" "$APK.sha256"
+
       - name: Show APKs
         if: always()
         shell: bash
-        run: find futo -path '*/build/outputs/apk/*' -type f -name '*.apk' -print || true
+        run: find futo -path '*/build/outputs/apk/*' -type f -print || true
 
       - name: Upload patched APK
         uses: actions/upload-artifact@v4
         with:
-          name: futo-0.1.30-system-subtypes
-          path: futo/build/outputs/apk/unstable/debug/*.apk
+          name: futo-0.1.30-system-subtypes-v2
+          path: |
+            futo/build/outputs/apk/unstable/debug/*.apk
+            futo/build/outputs/apk/unstable/debug/*.sha256
           if-no-files-found: error
           retention-days: 3
